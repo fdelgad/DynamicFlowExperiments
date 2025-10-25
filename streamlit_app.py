@@ -1,27 +1,28 @@
-# streamlit_master_app_v5.py
+# streamlit_master_app_v6.py
 # -----------------------------------------------------------------------------
-# Dynamic Flow Designer (v5)
+# Dynamic Flow Designer (v6)
 #
-# Changes from v4:
-# - Results plots (flows, stoichiometry, residence time, mixer requirements)
-#   are now Plotly, so they’re interactive (zoom, hover).
+# What's in here:
+# - Interactive DAG builder (sources / mixers / reactors / splitters)
+# - Reactive path definition → computes total reactive holdup volume
+# - Inverse design: given τ_target(t), desired A:(A+B) at a control junction,
+#   and φ(t) (how much of the downstream flow comes from the aged A+B branch),
+#   solve for pump flow programs In1(t), P(t), In2(t)
+# - Physical feasibility checks:
+#     - mixer dynamics / lag
+#     - pump max flow and max |dQ/dt|
+# - Interactive Plotly plots for flows, stoichiometry, residence time, mixer requirements
+# - Interactive DAG preview with hover tooltips, node coloring, edge arrows, split ratios
+# - Dark mode / light mode aware visuals for EVERYTHING (plots + DAG)
 #
-# Other features kept from v4:
-# 1. Interactive DAG preview using Plotly with hover tooltips:
-#    - Node type color
-#    - Thick black border = reactive path
-#    - Magenta border = control junction
-#    - Split ratios annotated
-#    - Legend
+# Run locally in Codespaces:
+#   streamlit run streamlit_master_app_v6.py --server.address 0.0.0.0 --server.port 8501
 #
-# 2. Pump feasibility constraints (max flow, max |dQ/dt|)
-#
-# 3. Defaults updated per your latest design:
-#    In1, P → M0 → Plate → Gradient → R3 → D → Out
-#    With In2 merging at Plate
-#
-# Run:
-#   streamlit run streamlit_master_app_v5.py --server.address 0.0.0.0 --server.port 8501
+# requirements.txt should include:
+#   streamlit
+#   numpy
+#   pandas
+#   plotly
 # -----------------------------------------------------------------------------
 
 import math
@@ -31,6 +32,17 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
+
+
+# ========== Theme detection (light vs dark) ==========
+
+def is_dark_mode() -> bool:
+    """
+    Detect if Streamlit is currently using dark theme.
+    We'll theme all figures (including DAG) accordingly.
+    """
+    base = st.get_option("theme.base")
+    return (base is not None) and (base.lower() == "dark")
 
 
 # ========== Safe math for user expressions ==========
@@ -316,7 +328,7 @@ def inverse_design_single_junction(
     }
 
 
-# ========== DAG diagram (Plotly, interactive hover) ==========
+# ========== DAG diagram (Plotly, interactive hover, theme-aware) ==========
 
 def compute_layout_coords(node_ids: List[str],
                           edges: List[Tuple[str, str]]) -> Dict[str, Tuple[float, float]]:
@@ -367,9 +379,10 @@ def build_splitter_ratio_map(edges_df: pd.DataFrame,
 def make_dag_figure_plotly(nodes_df: pd.DataFrame,
                            edges_df: pd.DataFrame,
                            reactive_path_nodes: List[str],
-                           junction_node: str) -> go.Figure:
+                           junction_node: str,
+                           dark_mode: bool) -> go.Figure:
     """
-    Create a Plotly figure for the DAG.
+    Create a Plotly figure for the DAG with theme-aware styling.
     """
 
     node_ids = nodes_df["id"].astype(str).tolist()
@@ -389,6 +402,22 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
     }
     default_color = "#aaaaaa"
 
+    # theme-dependent colors
+    if dark_mode:
+        bg_col = "#0e1117"
+        font_col = "white"
+        legend_bg = "rgba(14,17,23,0.8)"
+        legend_border = "white"
+        edge_color = "white"
+        arrow_font_color = "white"
+    else:
+        bg_col = "white"
+        font_col = "black"
+        legend_bg = "rgba(255,255,255,0.8)"
+        legend_border = "black"
+        edge_color = "black"
+        arrow_font_color = "black"
+
     # build edge traces (lines)
     edge_x = []
     edge_y = []
@@ -404,7 +433,7 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
         edge_x.extend([x1, x2, None])
         edge_y.extend([y1, y2, None])
 
-        # arrow-ish annotation
+        # arrow annotation
         annotations.append(
             dict(
                 ax=x1, ay=y1,
@@ -415,12 +444,12 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
                 arrowhead=3,
                 arrowsize=1,
                 arrowwidth=1.5,
-                arrowcolor="black",
+                arrowcolor=edge_color,
                 standoff=2,
             )
         )
 
-        # splitter ratio label
+        # splitter ratio label at midpoint if defined
         r = ratio_map.get((u, v), None)
         if r is not None:
             xm = 0.5*(x1+x2)
@@ -431,10 +460,10 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
                     xref='x', yref='y',
                     text=f"{r:.2f}",
                     showarrow=False,
-                    font=dict(size=10, color="black"),
+                    font=dict(size=10, color=arrow_font_color),
                     align="center",
-                    bgcolor="white",
-                    bordercolor="black",
+                    bgcolor=bg_col,
+                    bordercolor=edge_color,
                     borderwidth=0.5,
                 )
             )
@@ -443,7 +472,7 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
         x=edge_x,
         y=edge_y,
         mode='lines',
-        line=dict(color='black', width=1.5),
+        line=dict(color=edge_color, width=1.5),
         hoverinfo='none',
         showlegend=False,
     )
@@ -495,10 +524,10 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
         outline_color = "black"
         outline_width = 1.5
         if nid in reactive_path_nodes:
-            outline_color = "black"
+            outline_color = "black" if not dark_mode else "white"
             outline_width = 3.0
         if nid == junction_node:
-            outline_color = "#ff00aa"  # magenta
+            outline_color = "#ff00aa"  # magenta pop is readable both themes
             outline_width = 3.0
 
         marker_colors.append(fill)
@@ -527,18 +556,22 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
     )
 
     # legend: dummy traces
+    # borders in legend for reactive_path/junction should adapt to theme too
+    reactive_border_color = "black" if not dark_mode else "white"
+    junction_border_color = "#ff00aa"
+
     legend_traces = []
     legend_items = [
         ("source",   color_map["source"],   "Source"),
         ("mixer",    color_map["mixer"],    "Mixer / junction"),
         ("reactor",  color_map["reactor"],  "Reactor / hold-up"),
         ("splitter", color_map["splitter"], "Splitter"),
-        ("reactive_path", "white",          "Reactive path node (thick black border)"),
+        ("reactive_path", "white",          "Reactive path node (thick border)"),
         ("junction", "#ff00aa",             "Control junction (magenta border)"),
     ]
 
     for key, col, name in legend_items:
-        if key in ("reactive_path","junction"):
+        if key == "reactive_path":
             legend_traces.append(
                 go.Scatter(
                     x=[None], y=[None],
@@ -548,7 +581,26 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
                         size=16,
                         color='white',
                         line=dict(
-                            color='black' if key=="reactive_path" else "#ff00aa",
+                            color=reactive_border_color,
+                            width=3
+                        )
+                    ),
+                    showlegend=True,
+                    name=name,
+                    hoverinfo='skip'
+                )
+            )
+        elif key == "junction":
+            legend_traces.append(
+                go.Scatter(
+                    x=[None], y=[None],
+                    mode='markers',
+                    marker=dict(
+                        symbol='square',
+                        size=16,
+                        color='white',
+                        line=dict(
+                            color=junction_border_color,
                             width=3
                         )
                     ),
@@ -566,7 +618,7 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
                         symbol='square',
                         size=16,
                         color=col,
-                        line=dict(color='black', width=1)
+                        line=dict(color=reactive_border_color, width=1)
                     ),
                     showlegend=True,
                     name=name,
@@ -590,15 +642,17 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
             scaleanchor="x",
             scaleratio=1.0,
         ),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
+        plot_bgcolor=bg_col,
+        paper_bgcolor=bg_col,
+        font=dict(color=font_col),
         margin=dict(l=20, r=20, t=20, b=20),
         legend=dict(
             x=1.02,
             y=1.0,
-            bgcolor="rgba(255,255,255,0.8)",
-            bordercolor="black",
+            bgcolor=legend_bg,
+            bordercolor=legend_border,
             borderwidth=0.5,
+            font=dict(color=font_col),
         )
     )
 
@@ -609,7 +663,25 @@ def make_dag_figure_plotly(nodes_df: pd.DataFrame,
     return fig
 
 
-# ========== Plotly helpers for result plots ==========
+# ========== Plotly helpers for result plots (theme-aware) ==========
+
+def theme_params(dark_mode: bool):
+    """
+    Return template, bg color, font color for plotly charts.
+    """
+    if dark_mode:
+        return {
+            "template": "plotly_dark",
+            "bg": "#0e1117",
+            "font": "white",
+        }
+    else:
+        return {
+            "template": "simple_white",
+            "bg": "white",
+            "font": "black",
+        }
+
 
 def plot_flows_plotly(t,
                       Q_reactive,
@@ -617,7 +689,10 @@ def plot_flows_plotly(t,
                       Q_In2,
                       Q_In1,
                       Q_P,
-                      max_flow):
+                      max_flow,
+                      dark_mode: bool):
+    tp = theme_params(dark_mode)
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=Q_reactive,
                              mode="lines",
@@ -646,16 +721,21 @@ def plot_flows_plotly(t,
     ))
 
     fig.update_layout(
+        template=tp["template"],
         xaxis_title="time (min)",
         yaxis_title="flow (µL/min)",
-        template="simple_white",
-        legend=dict(font=dict(size=10)),
+        font=dict(color=tp["font"]),
+        plot_bgcolor=tp["bg"],
+        paper_bgcolor=tp["bg"],
+        legend=dict(font=dict(size=10, color=tp["font"])),
         margin=dict(l=30,r=30,t=30,b=30),
     )
     return fig
 
 
-def plot_ratio_plotly(t, R_target, R_achieved):
+def plot_ratio_plotly(t, R_target, R_achieved, dark_mode: bool):
+    tp = theme_params(dark_mode)
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=R_target,
                              mode="lines",
@@ -668,16 +748,21 @@ def plot_ratio_plotly(t, R_target, R_achieved):
     fig.update_yaxes(range=[-0.02, 1.02])
 
     fig.update_layout(
+        template=tp["template"],
         xaxis_title="time (min)",
         yaxis_title="A/(A+B)",
-        template="simple_white",
-        legend=dict(font=dict(size=10)),
+        font=dict(color=tp["font"]),
+        plot_bgcolor=tp["bg"],
+        paper_bgcolor=tp["bg"],
+        legend=dict(font=dict(size=10, color=tp["font"])),
         margin=dict(l=30,r=30,t=30,b=30),
     )
     return fig
 
 
-def plot_tau_vs_flow_plotly(t, tau_target, Q_reactive):
+def plot_tau_vs_flow_plotly(t, tau_target, Q_reactive, dark_mode: bool):
+    tp = theme_params(dark_mode)
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=tau_target,
                              mode="lines",
@@ -688,16 +773,21 @@ def plot_tau_vs_flow_plotly(t, tau_target, Q_reactive):
                              name="Q_reactive(t) = V_reactive/τ_target"))
 
     fig.update_layout(
+        template=tp["template"],
         xaxis_title="time (min)",
         yaxis_title="value",
-        template="simple_white",
-        legend=dict(font=dict(size=10)),
+        font=dict(color=tp["font"]),
+        plot_bgcolor=tp["bg"],
+        paper_bgcolor=tp["bg"],
+        legend=dict(font=dict(size=10, color=tp["font"])),
         margin=dict(l=30,r=30,t=30,b=30),
     )
     return fig
 
 
-def plot_mixer_requirements_plotly(t, C_req, fA_in_req):
+def plot_mixer_requirements_plotly(t, C_req, fA_in_req, dark_mode: bool):
+    tp = theme_params(dark_mode)
+
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=t, y=C_req,
                              mode="lines",
@@ -710,10 +800,13 @@ def plot_mixer_requirements_plotly(t, C_req, fA_in_req):
     fig.update_yaxes(range=[-0.1, 1.1])
 
     fig.update_layout(
+        template=tp["template"],
         xaxis_title="time (min)",
         yaxis_title="fraction A",
-        template="simple_white",
-        legend=dict(font=dict(size=10)),
+        font=dict(color=tp["font"]),
+        plot_bgcolor=tp["bg"],
+        paper_bgcolor=tp["bg"],
+        legend=dict(font=dict(size=10, color=tp["font"])),
         margin=dict(l=30,r=30,t=30,b=30),
     )
     return fig
@@ -722,12 +815,14 @@ def plot_mixer_requirements_plotly(t, C_req, fA_in_req):
 # ========== STREAMLIT APP ==========
 
 st.set_page_config(
-    page_title="Dynamic Flow Designer (v5)",
+    page_title="Dynamic Flow Designer (v6)",
     page_icon="🧪",
     layout="wide"
 )
 
-st.title("🧪 Dynamic Flow Designer (v5)")
+dark_mode = is_dark_mode()
+
+st.title("🧪 Dynamic Flow Designer (v6)")
 st.markdown("""
 You're designing a dynamic flow experiment.
 
@@ -741,7 +836,7 @@ You're designing a dynamic flow experiment.
    - Split policy φ(t) (how much of the total flow at that junction comes from the aged branch),
    - Physical volumes.
 5. We compute required syringe pump programs.
-6. We check feasibility (mixing limits and pump limits).
+6. We check feasibility (mixing lag + pump limits).
 """)
 
 # ---- Sidebar: global time + pump constraints ----
@@ -774,7 +869,7 @@ st.caption(
     "- `type`: source / mixer / reactor / splitter\n"
     "- `V_uL`: holdup volume (µL); 0 means ideal tee/no holdup.\n"
     "- `reactive`: if True, this node's volume is counted toward chemistry time.\n"
-    "- `species_A_frac`, `species_B_frac`: for sources, what's inside that syringe."
+    "- `species_A_frac`, `species_B_frac`: for sources, what's in that syringe."
 )
 
 default_nodes = pd.DataFrame([
@@ -899,7 +994,7 @@ R_expr = st.text_input(
 )
 
 
-# ---- Section 4: DAG Preview (interactive) ----
+# ---- Section 4: DAG Preview (interactive, theme-aware) ----
 st.subheader("4️⃣ DAG Preview (interactive)")
 
 st.caption(
@@ -907,10 +1002,11 @@ st.caption(
     "- volume (µL)\n"
     "- reactive flag (does it count toward chemistry time?)\n"
     "- source composition if it's a pump\n\n"
-    "Thick black outline = part of your reactive path.\n"
-    "Magenta outline = control junction node.\n"
+    "Thick border = part of your reactive path.\n"
+    "Magenta border = control junction node.\n"
     "Edge labels on splitters = split ratio.\n"
-    "Legend is on the right."
+    "Legend is on the right.\n"
+    "All visuals adapt to Streamlit light/dark mode."
 )
 
 try:
@@ -918,7 +1014,8 @@ try:
         nodes_df,
         edges_df,
         reactive_path_nodes=path_nodes,
-        junction_node=junction_node
+        junction_node=junction_node,
+        dark_mode=dark_mode,
     )
     st.plotly_chart(fig_preview, use_container_width=True)
 except Exception as e:
@@ -978,6 +1075,7 @@ if st.button("Solve inverse design"):
                 Q_In1,
                 Q_P,
                 max_flow,
+                dark_mode,
             )
             st.plotly_chart(flows_fig, use_container_width=True)
 
@@ -986,7 +1084,8 @@ if st.button("Solve inverse design"):
             ratio_fig = plot_ratio_plotly(
                 t,
                 R_target_out,
-                R_achieved
+                R_achieved,
+                dark_mode,
             )
             st.plotly_chart(ratio_fig, use_container_width=True)
 
@@ -994,7 +1093,8 @@ if st.button("Solve inverse design"):
         tau_fig = plot_tau_vs_flow_plotly(
             t,
             tau_target,
-            Q_reactive
+            Q_reactive,
+            dark_mode,
         )
         st.plotly_chart(tau_fig, use_container_width=True)
 
@@ -1002,7 +1102,8 @@ if st.button("Solve inverse design"):
         mixer_fig = plot_mixer_requirements_plotly(
             t,
             C_req,
-            fA_in_req
+            fA_in_req,
+            dark_mode,
         )
         st.plotly_chart(mixer_fig, use_container_width=True)
 
@@ -1034,6 +1135,7 @@ if st.button("Solve inverse design"):
 
     except Exception as e:
         st.error(f"Error during inverse solve: {e}")
+
 
 
 
